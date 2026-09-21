@@ -11,10 +11,10 @@ parallel = ["plonky2_maybe_rayon/parallel", "plonky2/parallel"]
 [dependencies]
 anyhow = { version = "1.0.40", default-features = false }
 itertools = { version = "0.10.0", default-features = false }
-plonky2_maybe_rayon = { version = "0.1.0", default-features = false }
+plonky2_maybe_rayon = { version = "1.0.0", default-features = false }
 num = { version = "0.4.0", default-features = false }
 plonky2 = { version = "1.1.0", default-features = false }
-plonky2_u32 = { git = "https://github.com/dadantas/plonky2-u32.git", branch = "main", default-features = false }
+plonky2_u32 = { git = "https://github.com/alxkzmn/plonky2-u32", rev = "fcabb02", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 
 [dev-dependencies]

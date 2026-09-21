@@ -10,16 +10,27 @@ use plonky2::iop::generator::{GeneratedValues, SimpleGenerator};
 use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::iop::witness::{PartitionWitness, Witness};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::util::serialization::{Buffer, IoResult, Read, Write};
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 use plonky2_u32::gadgets::multiple_comparison::list_le_u32_circuit;
 use plonky2_u32::witness::{GeneratedValuesU32, WitnessU32};
 
-use alloc::string::String;
 use crate::alloc::string::ToString;
+use alloc::string::String;
 
 #[derive(Clone, Debug)]
 pub struct BigUintTarget {
     pub limbs: Vec<U32Target>,
+}
+
+pub(crate) fn write_biguint_target(dst: &mut Vec<u8>, value: &BigUintTarget) -> IoResult<()> {
+    dst.write_target_vec(&value.limbs.iter().map(|limb| limb.0).collect::<Vec<_>>())
+}
+
+pub(crate) fn read_biguint_target(src: &mut Buffer) -> IoResult<BigUintTarget> {
+    Ok(BigUintTarget {
+        limbs: src.read_target_vec()?.into_iter().map(U32Target).collect(),
+    })
 }
 
 impl BigUintTarget {
@@ -146,12 +157,16 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         let mut combined_limbs = vec![];
         let mut carry = self.zero_u32();
         for i in 0..num_limbs {
-            let a_limb = (i < a.num_limbs())
-                .then(|| a.limbs[i])
-                .unwrap_or_else(|| self.zero_u32());
-            let b_limb = (i < b.num_limbs())
-                .then(|| b.limbs[i])
-                .unwrap_or_else(|| self.zero_u32());
+            let a_limb = if i < a.num_limbs() {
+                a.limbs[i]
+            } else {
+                self.zero_u32()
+            };
+            let b_limb = if i < b.num_limbs() {
+                b.limbs[i]
+            } else {
+                self.zero_u32()
+            };
 
             let (new_limb, new_carry) = self.add_many_u32(&[carry, a_limb, b_limb]);
             carry = new_carry;
@@ -317,7 +332,7 @@ impl<F: PrimeField> GeneratedValuesBigUint<F> for GeneratedValues<F> {
 }
 
 #[derive(Debug)]
-struct BigUintDivRemGenerator<F: RichField + Extendable<D>, const D: usize> {
+pub(crate) struct BigUintDivRemGenerator<F: RichField + Extendable<D>, const D: usize> {
     a: BigUintTarget,
     b: BigUintTarget,
     div: BigUintTarget,
@@ -337,7 +352,11 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
             .collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let a = witness.get_biguint_target(self.a.clone());
         let b = witness.get_biguint_target(self.b.clone());
         let (div, rem) = a.div_rem(&b);
@@ -346,19 +365,36 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
         out_buffer.set_biguint_target(&self.rem, &rem);
         Ok(())
     }
-    
+
     fn id(&self) -> String {
         "BigUintDivRemGenerator".to_string()
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        write_biguint_target(dst, &self.a)?;
+        write_biguint_target(dst, &self.b)?;
+        write_biguint_target(dst, &self.div)?;
+        write_biguint_target(dst, &self.rem)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        Ok(Self {
+            a: read_biguint_target(src)?,
+            b: read_biguint_target(src)?,
+            div: read_biguint_target(src)?,
+            rem: read_biguint_target(src)?,
+            _phantom: PhantomData,
+        })
     }
 }
 

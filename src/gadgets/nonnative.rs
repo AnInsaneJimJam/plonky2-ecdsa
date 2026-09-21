@@ -1,7 +1,8 @@
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::marker::PhantomData;
 
+use alloc::string::String;
 use num::{BigUint, Integer, One, Zero};
 use plonky2::field::extension::Extendable;
 use plonky2::field::types::{Field, PrimeField};
@@ -10,20 +11,34 @@ use plonky2::iop::generator::{GeneratedValues, SimpleGenerator};
 use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::iop::witness::{PartitionWitness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::util::serialization::{Buffer, IoResult, Read, Write};
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 use plonky2_u32::gadgets::range_check::range_check_u32_circuit;
 use plonky2_u32::witness::GeneratedValuesU32;
-use alloc::string::String;
-use crate::alloc::string::ToString;
 
 use crate::gadgets::biguint::{
-    BigUintTarget, CircuitBuilderBiguint, GeneratedValuesBigUint, WitnessBigUint,
+    read_biguint_target, write_biguint_target, BigUintTarget, CircuitBuilderBiguint,
+    GeneratedValuesBigUint, WitnessBigUint,
 };
 
 #[derive(Clone, Debug)]
 pub struct NonNativeTarget<FF: Field> {
     pub(crate) value: BigUintTarget,
     pub(crate) _phantom: PhantomData<FF>,
+}
+
+pub(crate) fn write_nonnative_target<FF: Field>(
+    dst: &mut Vec<u8>,
+    value: &NonNativeTarget<FF>,
+) -> IoResult<()> {
+    write_biguint_target(dst, &value.value)
+}
+
+pub(crate) fn read_nonnative_target<FF: Field>(src: &mut Buffer) -> IoResult<NonNativeTarget<FF>> {
+    Ok(NonNativeTarget {
+        value: read_biguint_target(src)?,
+        _phantom: PhantomData,
+    })
 }
 
 pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> {
@@ -447,7 +462,11 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
 }
 
 #[derive(Debug)]
-struct NonNativeAdditionGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> {
+pub(crate) struct NonNativeAdditionGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: PrimeField,
+> {
     a: NonNativeTarget<FF>,
     b: NonNativeTarget<FF>,
     sum: NonNativeTarget<FF>,
@@ -469,7 +488,11 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
             .collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let a = FF::from_noncanonical_biguint(witness.get_biguint_target(self.a.value.clone()));
         let b = FF::from_noncanonical_biguint(witness.get_biguint_target(self.b.value.clone()));
         let a_biguint = a.to_canonical_biguint();
@@ -483,28 +506,51 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         };
 
         out_buffer.set_biguint_target(&self.sum.value, &sum_reduced);
-        out_buffer.set_bool_target(self.overflow, overflow);
+        out_buffer.set_bool_target(self.overflow, overflow)?;
         Ok(())
     }
-    
+
     fn id(&self) -> String {
-        "NonNativeAdditionGenerator".to_string()
+        format!(
+            "NonNativeAdditionGenerator<{}>",
+            core::any::type_name::<FF>()
+        )
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        write_nonnative_target(dst, &self.a)?;
+        write_nonnative_target(dst, &self.b)?;
+        write_nonnative_target(dst, &self.sum)?;
+        dst.write_target_bool(self.overflow)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        Ok(Self {
+            a: read_nonnative_target(src)?,
+            b: read_nonnative_target(src)?,
+            sum: read_nonnative_target(src)?,
+            overflow: src.read_target_bool()?,
+            _phantom: PhantomData,
+        })
     }
 }
 
 #[derive(Debug)]
-struct NonNativeMultipleAddsGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField>
-{
+pub(crate) struct NonNativeMultipleAddsGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: PrimeField,
+> {
     summands: Vec<NonNativeTarget<FF>>,
     sum: NonNativeTarget<FF>,
     overflow: U32Target,
@@ -521,7 +567,11 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
             .collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let summands: Vec<_> = self
             .summands
             .iter()
@@ -546,24 +596,54 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         out_buffer.set_u32_target(self.overflow, overflow);
         Ok(())
     }
-    
+
     fn id(&self) -> String {
-        "NonNativeMultipleAddsGenerator".to_string()
+        format!(
+            "NonNativeMultipleAddsGenerator<{}>",
+            core::any::type_name::<FF>()
+        )
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        dst.write_usize(self.summands.len())?;
+        for summand in &self.summands {
+            write_nonnative_target(dst, summand)?;
+        }
+        write_nonnative_target(dst, &self.sum)?;
+        dst.write_target(self.overflow.0)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        let len = src.read_usize()?;
+        let mut summands = Vec::with_capacity(len);
+        for _ in 0..len {
+            summands.push(read_nonnative_target(src)?);
+        }
+        Ok(Self {
+            summands,
+            sum: read_nonnative_target(src)?,
+            overflow: U32Target(src.read_target()?),
+            _phantom: PhantomData,
+        })
     }
 }
 
 #[derive(Debug)]
-struct NonNativeSubtractionGenerator<F: RichField + Extendable<D>, const D: usize, FF: Field> {
+pub(crate) struct NonNativeSubtractionGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: Field,
+> {
     a: NonNativeTarget<FF>,
     b: NonNativeTarget<FF>,
     diff: NonNativeTarget<FF>,
@@ -585,7 +665,11 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
             .collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let a = FF::from_noncanonical_biguint(witness.get_biguint_target(self.a.value.clone()));
         let b = FF::from_noncanonical_biguint(witness.get_biguint_target(self.b.value.clone()));
         let a_biguint = a.to_canonical_biguint();
@@ -599,27 +683,51 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         };
 
         out_buffer.set_biguint_target(&self.diff.value, &diff_biguint);
-        out_buffer.set_bool_target(self.overflow, overflow);
+        out_buffer.set_bool_target(self.overflow, overflow)?;
         Ok(())
     }
-    
+
     fn id(&self) -> String {
-        "NonNativeSubtractionGenerator".to_string()
+        format!(
+            "NonNativeSubtractionGenerator<{}>",
+            core::any::type_name::<FF>()
+        )
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        write_nonnative_target(dst, &self.a)?;
+        write_nonnative_target(dst, &self.b)?;
+        write_nonnative_target(dst, &self.diff)?;
+        dst.write_target_bool(self.overflow)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        Ok(Self {
+            a: read_nonnative_target(src)?,
+            b: read_nonnative_target(src)?,
+            diff: read_nonnative_target(src)?,
+            overflow: src.read_target_bool()?,
+            _phantom: PhantomData,
+        })
     }
 }
 
 #[derive(Debug)]
-struct NonNativeMultiplicationGenerator<F: RichField + Extendable<D>, const D: usize, FF: Field> {
+pub(crate) struct NonNativeMultiplicationGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: Field,
+> {
     a: NonNativeTarget<FF>,
     b: NonNativeTarget<FF>,
     prod: NonNativeTarget<FF>,
@@ -641,7 +749,11 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
             .collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let a = FF::from_noncanonical_biguint(witness.get_biguint_target(self.a.value.clone()));
         let b = FF::from_noncanonical_biguint(witness.get_biguint_target(self.b.value.clone()));
         let a_biguint = a.to_canonical_biguint();
@@ -656,24 +768,48 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         out_buffer.set_biguint_target(&self.overflow, &overflow_biguint);
         Ok(())
     }
-    
+
     fn id(&self) -> String {
-        "NonNativeMultiplicationGenerator".to_string()
+        format!(
+            "NonNativeMultiplicationGenerator<{}>",
+            core::any::type_name::<FF>()
+        )
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        write_nonnative_target(dst, &self.a)?;
+        write_nonnative_target(dst, &self.b)?;
+        write_nonnative_target(dst, &self.prod)?;
+        write_biguint_target(dst, &self.overflow)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        Ok(Self {
+            a: read_nonnative_target(src)?,
+            b: read_nonnative_target(src)?,
+            prod: read_nonnative_target(src)?,
+            overflow: read_biguint_target(src)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
 #[derive(Debug)]
-struct NonNativeInverseGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> {
+pub(crate) struct NonNativeInverseGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: PrimeField,
+> {
     x: NonNativeTarget<FF>,
     inv: BigUintTarget,
     div: BigUintTarget,
@@ -687,7 +823,11 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         self.x.value.limbs.iter().map(|&l| l.0).collect()
     }
 
-    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) -> Result<(), anyhow::Error> {
+    fn run_once(
+        &self,
+        witness: &PartitionWitness<F>,
+        out_buffer: &mut GeneratedValues<F>,
+    ) -> Result<(), anyhow::Error> {
         let x = FF::from_noncanonical_biguint(witness.get_biguint_target(self.x.value.clone()));
         let inv = x.inverse();
 
@@ -701,19 +841,37 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
         out_buffer.set_biguint_target(&self.inv, &inv_biguint);
         Ok(())
     }
-    
+
     fn id(&self) -> String {
-        "NonNativeInverseGenerator".to_string()
+        format!(
+            "NonNativeInverseGenerator<{}>",
+            core::any::type_name::<FF>()
+        )
     }
-    
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
-        todo!()
+
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<()> {
+        write_nonnative_target(dst, &self.x)?;
+        write_biguint_target(dst, &self.inv)?;
+        write_biguint_target(dst, &self.div)
     }
-    
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> IoResult<Self>
     where
-        Self: Sized {
-        todo!()
+        Self: Sized,
+    {
+        Ok(Self {
+            x: read_nonnative_target(src)?,
+            inv: read_biguint_target(src)?,
+            div: read_biguint_target(src)?,
+            _phantom: PhantomData,
+        })
     }
 }
 

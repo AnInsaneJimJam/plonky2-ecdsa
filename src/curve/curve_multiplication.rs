@@ -9,7 +9,7 @@ const WINDOW_BITS: usize = 4;
 const BASE: usize = 1 << WINDOW_BITS;
 
 fn digits_per_scalar<C: Curve>() -> usize {
-    (C::ScalarField::BITS + WINDOW_BITS - 1) / WINDOW_BITS
+    C::ScalarField::BITS.div_ceil(WINDOW_BITS)
 }
 
 /// Precomputed state used for scalar x ProjectivePoint multiplications,
@@ -62,7 +62,6 @@ impl<C: Curve> ProjectivePoint<C> {
 
         let all_sums: Vec<ProjectivePoint<C>> = all_summands
             .iter()
-            .cloned()
             .map(|vec| vec.iter().fold(ProjectivePoint::ZERO, |a, &b| a + b))
             .collect();
         for i in 0..all_sums.len() {
